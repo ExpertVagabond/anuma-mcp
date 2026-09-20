@@ -1,0 +1,27 @@
+{
+  "name": "anuma-mcp",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server for Anuma, the private AI memory layer. Lets any MCP-capable agent use Anuma models, memory, tools and ZETA credits.",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "anuma-mcp": "./dist/index.js" },
+  "main": "./dist/index.js",
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "probe": "node --experimental-strip-types src/probe.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "keywords": ["mcp", "model-context-protocol", "anuma", "zetachain", "zeta", "solana", "ai-memory", "agent"]
+}

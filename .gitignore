@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+*.log
+
+# private working notes, not for the public repo
+NOTES.local.md
