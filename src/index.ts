@@ -39,7 +39,7 @@ const TOOLS = [
   {
     name: "anuma_respond",
     description:
-      "Run inference through Anuma against any catalogued model, with the user's private memory in context. Spends credits.",
+      "Run inference through Anuma, with the user's private memory in context. Spends credits. `model` must be a routable `provider/model` id from anuma_list_models -- the catalogue is wider than what any one app can route to.",
     inputSchema: {
       type: "object",
       properties: {
@@ -150,10 +150,7 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
       return { count: models.length, models };
     }
     case "anuma_respond":
-      return client.respond({
-        model: String(args.model),
-        messages: [{ role: "user", content: [{ type: "text", text: String(args.prompt) }] }],
-      });
+      return client.respond({ model: String(args.model), input: String(args.prompt) });
     case "anuma_credits_balance":
       return client.creditsBalance();
     case "anuma_zeta_rate":

@@ -144,7 +144,19 @@ export class AnumaClient {
   }
 
   /** Non-streaming inference. Spends credits from the app balance. */
-  respond(body: { model: string; messages: unknown[]; [k: string]: unknown }) {
+  /**
+   * Inference. The prompt field is `input`, NOT `messages`.
+   *
+   * Verified live 2026-09-21: a `messages` array is accepted, billed and
+   * answered, but its text never reaches the model -- the completion comes
+   * back addressed to an empty prompt. Both the OpenAI chat shape
+   * (`content: "text"`) and the content-part shape (`content: [{type,text}]`)
+   * are dropped the same silent way. There is no error to catch, so the only
+   * safe move is to never send that field.
+   *
+   * `model` must be `provider/model`; a bare id is rejected on format.
+   */
+  respond(body: { model: string; input: string; [k: string]: unknown }) {
     return this.request<unknown>("POST", "/api/v1/responses", body);
   }
 
