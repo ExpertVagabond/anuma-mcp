@@ -15,6 +15,7 @@ import {
   sessionToolBudgetFromEnv,
   DEFAULT_TOOL_COST_LIMIT_MICRO_USD,
   DEFAULT_SESSION_TOOL_BUDGET_MICRO_USD,
+  ACCOUNT_CONTROL_TOOLS,
   type PolicyContext,
 } from "./policy.ts";
 
@@ -203,4 +204,35 @@ test("sessionToolBudgetFromEnv defaults to $1.00 and rejects junk", () => {
   assert.equal(sessionToolBudgetFromEnv(), DEFAULT_SESSION_TOOL_BUDGET_MICRO_USD);
   if (prev === undefined) delete process.env.ANUMA_SESSION_TOOL_BUDGET_MICRO_USD;
   else process.env.ANUMA_SESSION_TOOL_BUDGET_MICRO_USD = prev;
+});
+
+test("account-control tools always escalate, whatever the budget says", () => {
+  // The point is not that these calls are risky in isolation. It is that they
+  // edit the limits the gate enforces, so an agent that can run them unattended
+  // has no limits at all.
+  for (const tool of ACCOUNT_CONTROL_TOOLS) {
+    for (const keyMode of ["live", "test"] as const) {
+      const d = evaluate(ctx({ tool, keyMode, estimatedCredits: 0, sessionSpend: 0 }));
+      assert.equal(d.verdict, "escalate", `${tool} on a ${keyMode} key should escalate`);
+    }
+    // Even with every budget wide open.
+    const rich = evaluate(ctx({ tool, sessionLimit: 1e9, sessionToolBudgetMicroUsd: 1e9 }));
+    assert.equal(rich.verdict, "escalate", `${tool} should escalate even with unlimited budget`);
+  }
+});
+
+test("account-control escalation outranks an exhausted tool budget", () => {
+  // A refusal would be defensible, but escalation is more useful: it can be
+  // approved, and topping up is exactly what you would want to do when the
+  // budget is gone.
+  const d = evaluate(
+    ctx({ tool: "anuma_app_user_credits", sessionToolSpendMicroUsd: 9_000_000, sessionToolBudgetMicroUsd: 1 }),
+  );
+  assert.equal(d.verdict, "escalate");
+});
+
+test("the read half of app management stays free", () => {
+  for (const tool of ["anuma_apps", "anuma_permissions"]) {
+    assert.equal(evaluate(ctx({ tool, estimatedCredits: 0, keyMode: "none" })).verdict, "allow");
+  }
 });

@@ -47,6 +47,21 @@ export interface AnumaClientOptions {
   timeoutMs?: number;
 }
 
+export interface DeveloperApp {
+  app_uuid: string;
+  name: string;
+  /** Credits available in the app pool. */
+  balance: number;
+  /** Credits granted per new user. This is the dashboard's Per-User Limit, which defaults to 0. */
+  default_user_credits: number;
+  app_type: string;
+  is_active: boolean;
+  allowed_origins: string[];
+  has_privy_config: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CuratedModel {
   id: string;
   name?: string;
@@ -261,6 +276,76 @@ export class AnumaClient {
   /** Embeddings. Returns an `inference_id` alongside the vectors. */
   embed(body: { model: string; input: string | string[]; dimensions?: number }) {
     return this.request<unknown>("POST", "/api/v1/embeddings", body);
+  }
+
+  /*
+   * Developer app management.
+   *
+   * This is the group that makes the funding story automatable. The per-user
+   * limit that reads as a dead payment in the dashboard is a PATCH, and
+   * allocating credits from the app pool is a POST. Both work with an ordinary
+   * app key. `credits/purchase` returning 403 says only that credit PACKS
+   * cannot be bought from the API; it says nothing about moving credits that
+   * the app already holds.
+   *
+   * Throughout, 1 credit = $0.01.
+   */
+  listApps() {
+    return this.request<{ apps: DeveloperApp[] }>("GET", "/api/v1/developer/apps");
+  }
+
+  listAppUsers(appUuid: string) {
+    return this.request<unknown>("GET", `/api/v1/developer/apps/${encodeURIComponent(appUuid)}/users`);
+  }
+
+  appUsage(appUuid: string) {
+    return this.request<unknown>("GET", `/api/v1/developer/apps/${encodeURIComponent(appUuid)}/usage`);
+  }
+
+  /** `default_user_credits` is the Per-User Limit the dashboard defaults to 0. */
+  updateApp(appUuid: string, body: { name?: string; default_user_credits?: number; allowed_origins?: string[] }) {
+    return this.request<unknown>("PATCH", `/api/v1/developer/apps/${encodeURIComponent(appUuid)}`, body);
+  }
+
+  /** Sets one user's spending ceiling. Does not move credits. */
+  setUserLimit(appUuid: string, address: string, credits: number) {
+    return this.request<unknown>(
+      "PATCH",
+      `/api/v1/developer/apps/${encodeURIComponent(appUuid)}/users/${encodeURIComponent(address)}`,
+      { credits },
+    );
+  }
+
+  /** Moves credits from the app pool to one user. This spends the app balance. */
+  topUpUser(appUuid: string, address: string, credits: number) {
+    return this.request<unknown>(
+      "POST",
+      `/api/v1/developer/apps/${encodeURIComponent(appUuid)}/users/${encodeURIComponent(address)}/top-up`,
+      { credits },
+    );
+  }
+
+  billingHistory() {
+    return this.request<unknown>("GET", "/api/v1/developer/billing");
+  }
+
+  /** Anuma's own per-platform agent permission model. The mirror of this server's gate. */
+  agentConsents() {
+    return this.request<unknown>("GET", "/api/v1/user/agent-consents");
+  }
+
+  listAgents() {
+    return this.request<unknown>("GET", "/api/v1/agents");
+  }
+
+  /** Connected third-party connectors, and the tools denied on them. */
+  listConnectors() {
+    return this.request<unknown>("GET", "/api/v1/connectors");
+  }
+
+  /** Server-side allow/deny for a connector's tools. The half of cost control the client cannot enforce. */
+  connectorTools(provider: string) {
+    return this.request<unknown>("GET", `/api/v1/connectors/${encodeURIComponent(provider)}/tools`);
   }
 
   /** Identity and scopes for the current credential. */

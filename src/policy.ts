@@ -56,10 +56,28 @@ export const READ_ONLY_TOOLS = new Set([
   "anuma_account",
   // Free and model-free: verified to move neither credits nor request_count.
   "anuma_data",
+  "anuma_apps",
+  "anuma_permissions",
 ]);
 
 /** Tools that move value or change account state. */
-export const MUTATING_TOOLS = new Set(["anuma_respond", "anuma_redeem_tokens", "anuma_embed"]);
+export const MUTATING_TOOLS = new Set([
+  "anuma_respond",
+  "anuma_redeem_tokens",
+  "anuma_embed",
+  "anuma_app_configure",
+  "anuma_app_user_credits",
+]);
+
+/**
+ * Tools that change account configuration or move credits between balances.
+ *
+ * These always escalate. Not because they are likely to be wrong, but because
+ * they are the controls the gate itself depends on: an agent that can raise a
+ * per-user limit can raise its own ceiling, and one that can top up a user can
+ * drain the app pool. A limit an agent can edit is not a limit.
+ */
+export const ACCOUNT_CONTROL_TOOLS = new Set(["anuma_app_configure", "anuma_app_user_credits"]);
 
 /**
  * Default ceiling on a single call's reachable tool cost: $0.02 in micro-USD.
@@ -116,6 +134,15 @@ const usd = (micro: number) => `$${(micro / 1_000_000).toFixed(4)}`;
  */
 export function evaluate(ctx: PolicyContext): Decision {
   if (READ_ONLY_TOOLS.has(ctx.tool)) return { verdict: "allow" };
+
+  if (ACCOUNT_CONTROL_TOOLS.has(ctx.tool)) {
+    return {
+      verdict: "escalate",
+      prompt:
+        `${ctx.tool} changes spending controls or moves credits between balances. ` +
+        `An agent that can raise its own ceiling does not have one, so a human confirms.`,
+    };
+  }
 
   // Irreversible: burns ZETA. Always a human.
   if (ctx.tool === "anuma_redeem_tokens") {

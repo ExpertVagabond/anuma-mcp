@@ -177,6 +177,61 @@ const TOOLS = [
     },
   },
   {
+    name: "anuma_apps",
+    description:
+      "Developer apps on this account: pool balance, per-user credit grant, type, origins. " +
+      "1 credit = $0.01. Add users:true for each app's users and their limits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        users: { type: "boolean", description: "Also list each app's users. Default false." },
+        app_uuid: { type: "string", description: "Restrict to one app." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "anuma_app_configure",
+    description:
+      "Change an app's settings, notably `default_user_credits`, the Per-User Limit. " +
+      "At 0 a key is authorised to spend nothing however full the app pool is. Requires approval.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        app_uuid: { type: "string" },
+        default_user_credits: { type: "number", description: "Credits granted per user. 1 credit = $0.01." },
+        name: { type: "string" },
+        allowed_origins: { type: "array", items: { type: "string" }, description: "CORS origins. [] clears." },
+      },
+      required: ["app_uuid"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "anuma_app_user_credits",
+    description:
+      "Set one user's spending ceiling, or move credits from the app pool to that user. " +
+      "set_limit changes a cap; top_up spends the app balance. Both require approval.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["set_limit", "top_up"] },
+        app_uuid: { type: "string" },
+        address: { type: "string", description: "User wallet address, e.g. from anuma_account." },
+        credits: { type: "number", description: "1 credit = $0.01." },
+      },
+      required: ["action", "app_uuid", "address", "credits"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "anuma_permissions",
+    description:
+      "Anuma's own permission model: registered agents, per-platform consents and their scopes " +
+      "(e.g. credits:spend), connected connectors and any tools denied on them.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
     name: "anuma_account",
     description:
       "Who this credential is, what scopes it holds, and which subscription tier it is on. " +
@@ -449,6 +504,45 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
         input: Array.isArray(args.input) ? (args.input as string[]).map(String) : String(args.input),
         ...(typeof args.dimensions === "number" ? { dimensions: args.dimensions } : {}),
       });
+    case "anuma_apps": {
+      const { apps } = await client.listApps();
+      const wanted = typeof args.app_uuid === "string" ? apps.filter((a) => a.app_uuid === args.app_uuid) : apps;
+      if (!args.users) return { count: wanted.length, note: "1 credit = $0.01.", apps: wanted };
+      const withUsers = await Promise.all(
+        wanted.map(async (a) => ({ ...a, users: await client.listAppUsers(a.app_uuid) })),
+      );
+      return { count: withUsers.length, note: "1 credit = $0.01.", apps: withUsers };
+    }
+    case "anuma_app_configure": {
+      const body: { name?: string; default_user_credits?: number; allowed_origins?: string[] } = {};
+      if (typeof args.name === "string") body.name = args.name;
+      if (typeof args.default_user_credits === "number") body.default_user_credits = args.default_user_credits;
+      if (Array.isArray(args.allowed_origins)) body.allowed_origins = (args.allowed_origins as string[]).map(String);
+      if (Object.keys(body).length === 0) {
+        throw new ValidationError("anuma_app_configure needs at least one field to change.");
+      }
+      return client.updateApp(String(args.app_uuid), body);
+    }
+    case "anuma_app_user_credits": {
+      const credits = Number(args.credits);
+      if (!Number.isFinite(credits) || credits < 0) {
+        throw new ValidationError("`credits` must be a non-negative number. 1 credit = $0.01.");
+      }
+      return args.action === "top_up"
+        ? client.topUpUser(String(args.app_uuid), String(args.address), credits)
+        : client.setUserLimit(String(args.app_uuid), String(args.address), credits);
+    }
+    case "anuma_permissions": {
+      // Four reads, because "who may act, on what, with which scopes" is spread
+      // across four endpoints and is only meaningful together.
+      const [agents, consents, connectors, billing] = await Promise.all([
+        client.listAgents(),
+        client.agentConsents(),
+        client.listConnectors(),
+        client.billingHistory(),
+      ]);
+      return { agents, consents, connectors, billing };
+    }
     case "anuma_account": {
       // Two reads, because "who am I" and "what may I use" are separate
       // endpoints and an agent hitting model_tier_required needs both.
