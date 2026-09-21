@@ -68,7 +68,7 @@ billing detail on the error instead of collapsing it to "payment required".
 6. Streaming (`stream: true`) and `background: true` are in the request schema
    and untouched here. Streaming would matter for a live demo.
 
-## What the second pass changed
+## What the second and third passes changed
 
 - **`anuma_list_tools` was returning 1.78 MB.** Every registry entry carries a
   4096-dimension embedding for Anuma's tool search. That is ~450k tokens into an
@@ -82,6 +82,19 @@ billing detail on the error instead of collapsing it to "payment required".
   prompt fell to the generic catch and came back `transient, isRetryable: true`,
   inviting an agent to loop on a call that can never succeed. Now `validation`.
 - **Multi-turn works**, via `input` as a top-level array.
+- **Curated models.** `/api/v1/curated-models` returns 53 models with tier and
+  category metadata, and membership predicts routability where nothing on a
+  catalogue entry did. `anuma_list_models` now defaults to it.
+- **`anuma_account`** surfaces identity, scopes and subscription tier, which is
+  what a `model_tier_required` error actually needs you to know.
+- **Cost is reconciled, not guessed.** Responses carry `tool_call_events`,
+  `client_injected_tools` and `portal_injected_tools`. An allowlist turns out to
+  be a floor rather than a ceiling -- Anuma injects its own tools on top -- so
+  the server now reads real cost off each response and enforces a session budget
+  (`ANUMA_SESSION_TOOL_BUDGET_MICRO_USD`, default $1.00).
+- **Error codes recovered.** A second envelope shape carries no `code` at all;
+  reading only `.code` turned every routing failure into `unknown`.
+- **Empty reasoning responses explain themselves** instead of returning "".
 
 ## Funding, resolved 2026-09-21
 
@@ -100,7 +113,10 @@ drained".
 
 ## Findings worth reporting
 
-0. **Three request fields are accepted, billed and silently ignored**: top-level
+0. **`/api/v1/usage/inference-weekly` appears to return platform-wide figures
+   to any app key** -- 5,352 requests and 71.4M tokens for a week in which this
+   app made 22 requests. Report privately, not publicly.
+0b. **Three request fields are accepted, billed and silently ignored**: top-level
    `messages`, `tools: []`, and `tool_choice: {"type":"none"}`. The last two
    matter most -- a caller trying to disable server-side tools by the obvious
    routes gets no error and still pays for the tools. Only the string

@@ -59,15 +59,74 @@ export function toSchema(t: RegistryTool): AnumaToolSchema {
 /**
  * Worst-case cost of a call, in micro-USD, ignoring token cost.
  *
- * With an explicit allowlist this is exact: the model can only reach those
- * tools. With `auto` it is the most expensive tool in the registry, because
- * Anuma selects server-side and the caller gets no say -- see the note in
- * policy.ts about why that is not paranoia.
+ * An explicit allowlist is a floor, NOT a ceiling. Verified 2026-09-21: a call
+ * naming only `OpenMeteoMCP-weather_forecast` came back with
+ * `portal_injected_tools: ["AnumaSearchMCP-anuma_text_search"]` -- Anuma adds
+ * its own tools on top of whatever the caller allows. So an allowlist is
+ * priced as the dearest named tool or the dearest tool Anuma is known to
+ * inject, whichever is higher.
+ *
+ * With `auto` it is simply the dearest tool in the registry: Anuma selects
+ * server-side and the caller gets no say.
+ *
+ * Only `none` is a true ceiling, because then no tool runs at all. This is why
+ * reconcile() exists: the estimate cannot be trusted, so the real cost is read
+ * back off the response.
  */
+/** Tools Anuma has been observed adding to a call on its own initiative. */
+export const PORTAL_INJECTED = ["AnumaSearchMCP-anuma_text_search"];
+
 export function worstCaseToolCost(tools: RegistryTool[], allow: string[] | "auto" | "none"): number {
   if (allow === "none") return 0;
-  const reachable = allow === "auto" ? tools : tools.filter((t) => allow.includes(t.name));
-  return reachable.reduce((max, t) => Math.max(max, t.costMicroUsd), 0);
+  const names = allow === "auto" ? tools.map((t) => t.name) : [...allow, ...PORTAL_INJECTED];
+  return tools
+    .filter((t) => names.includes(t.name))
+    .reduce((max, t) => Math.max(max, t.costMicroUsd), 0);
+}
+
+export interface ToolCallEvent {
+  name?: string;
+  arguments?: string;
+  output?: string;
+}
+
+export interface Invoked {
+  name: string;
+  costMicroUsd: number;
+  /** "client" if we allowed it, "portal" if Anuma added it, "unknown" if absent from the registry. */
+  injectedBy: "client" | "portal" | "unknown";
+}
+
+/**
+ * What a call ACTUALLY cost in tools, read off the response.
+ *
+ * The estimate is a guess by construction -- Anuma picks and injects tools
+ * server-side. `tool_call_events` is the receipt, so the ceiling accrues real
+ * spend instead of a flat per-call fiction.
+ */
+export function reconcile(
+  tools: RegistryTool[],
+  response: unknown,
+): { invoked: Invoked[]; toolMicroUsd: number } {
+  const r = (response ?? {}) as {
+    tool_call_events?: ToolCallEvent[];
+    client_injected_tools?: string[];
+    portal_injected_tools?: string[];
+  };
+  const byName = new Map(tools.map((t) => [t.name, t]));
+  const client = new Set(r.client_injected_tools ?? []);
+  const portal = new Set(r.portal_injected_tools ?? []);
+
+  const invoked: Invoked[] = [];
+  for (const ev of r.tool_call_events ?? []) {
+    if (!ev?.name) continue;
+    invoked.push({
+      name: ev.name,
+      costMicroUsd: byName.get(ev.name)?.costMicroUsd ?? 0,
+      injectedBy: client.has(ev.name) ? "client" : portal.has(ev.name) ? "portal" : "unknown",
+    });
+  }
+  return { invoked, toolMicroUsd: invoked.reduce((sum, i) => sum + i.costMicroUsd, 0) };
 }
 
 export function resolve(tools: RegistryTool[], names: string[]): { found: RegistryTool[]; missing: string[] } {

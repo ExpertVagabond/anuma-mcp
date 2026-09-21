@@ -12,7 +12,9 @@ import {
   evaluate,
   sessionLimitFromEnv,
   toolCostLimitFromEnv,
+  sessionToolBudgetFromEnv,
   DEFAULT_TOOL_COST_LIMIT_MICRO_USD,
+  DEFAULT_SESSION_TOOL_BUDGET_MICRO_USD,
   type PolicyContext,
 } from "./policy.ts";
 
@@ -161,4 +163,44 @@ test("toolCostLimitFromEnv defaults to $0.02 and rejects junk", () => {
   assert.equal(toolCostLimitFromEnv(), 0, "an explicit zero is a real limit, not junk");
   if (prev === undefined) delete process.env.ANUMA_MAX_TOOL_COST_MICRO_USD;
   else process.env.ANUMA_MAX_TOOL_COST_MICRO_USD = prev;
+});
+
+test("the session tool budget refuses once real spend reaches it", () => {
+  // Under budget: fine.
+  assert.equal(
+    evaluate(ctx({ sessionToolSpendMicroUsd: 999_999, sessionToolBudgetMicroUsd: 1_000_000 })).verdict,
+    "allow",
+  );
+  // At the budget: refused. Reaching the limit means it is spent, not that one
+  // more free call is owed.
+  const d = evaluate(ctx({ sessionToolSpendMicroUsd: 1_000_000, sessionToolBudgetMicroUsd: 1_000_000 }));
+  assert.equal(d.verdict, "refuse");
+  assert.match(d.reason, /session tool budget exhausted/);
+});
+
+test("an exhausted tool budget still refuses even when this call uses no tools", () => {
+  // The budget bounds the loop, not the call. A cheap call after the money is
+  // gone is still a call the session cannot afford to keep making.
+  const d = evaluate(
+    ctx({ worstCaseToolMicroUsd: 0, sessionToolSpendMicroUsd: 2_000_000, sessionToolBudgetMicroUsd: 1_000_000 }),
+  );
+  assert.equal(d.verdict, "refuse");
+});
+
+test("reads are never blocked by an exhausted tool budget", () => {
+  const d = evaluate(
+    ctx({ tool: "anuma_list_tools", estimatedCredits: 0, sessionToolSpendMicroUsd: 9_000_000 }),
+  );
+  assert.equal(d.verdict, "allow");
+});
+
+test("sessionToolBudgetFromEnv defaults to $1.00 and rejects junk", () => {
+  const prev = process.env.ANUMA_SESSION_TOOL_BUDGET_MICRO_USD;
+  delete process.env.ANUMA_SESSION_TOOL_BUDGET_MICRO_USD;
+  assert.equal(sessionToolBudgetFromEnv(), DEFAULT_SESSION_TOOL_BUDGET_MICRO_USD);
+  assert.equal(DEFAULT_SESSION_TOOL_BUDGET_MICRO_USD, 1_000_000);
+  process.env.ANUMA_SESSION_TOOL_BUDGET_MICRO_USD = "junk";
+  assert.equal(sessionToolBudgetFromEnv(), DEFAULT_SESSION_TOOL_BUDGET_MICRO_USD);
+  if (prev === undefined) delete process.env.ANUMA_SESSION_TOOL_BUDGET_MICRO_USD;
+  else process.env.ANUMA_SESSION_TOOL_BUDGET_MICRO_USD = prev;
 });

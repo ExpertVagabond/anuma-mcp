@@ -38,6 +38,10 @@ export interface PolicyContext {
   worstCaseToolMicroUsd?: number;
   /** Ceiling for that, from ANUMA_MAX_TOOL_COST_MICRO_USD. */
   toolCostLimitMicroUsd?: number;
+  /** Real tool spend already reconciled from earlier responses, in micro-USD. */
+  sessionToolSpendMicroUsd?: number;
+  /** Session budget for real tool spend, from ANUMA_SESSION_TOOL_BUDGET_MICRO_USD. */
+  sessionToolBudgetMicroUsd?: number;
 }
 
 /** Tools that only read. Never spend, never mutate. */
@@ -49,6 +53,7 @@ export const READ_ONLY_TOOLS = new Set([
   "anuma_list_tools",
   "anuma_agent_grants",
   "anuma_usage",
+  "anuma_account",
 ]);
 
 /** Tools that move value or change account state. */
@@ -64,6 +69,15 @@ export const MUTATING_TOOLS = new Set(["anuma_respond", "anuma_redeem_tokens"]);
  * and anything that can bill dollars needs a human.
  */
 export const DEFAULT_TOOL_COST_LIMIT_MICRO_USD = 20_000;
+
+/** Default session budget for real server-side tool spend: $1.00. */
+export const DEFAULT_SESSION_TOOL_BUDGET_MICRO_USD = 1_000_000;
+
+export function sessionToolBudgetFromEnv(): number {
+  const raw = process.env.ANUMA_SESSION_TOOL_BUDGET_MICRO_USD;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SESSION_TOOL_BUDGET_MICRO_USD;
+}
 
 export function toolCostLimitFromEnv(): number {
   const raw = process.env.ANUMA_MAX_TOOL_COST_MICRO_USD;
@@ -128,6 +142,22 @@ export function evaluate(ctx: PolicyContext): Decision {
    * nicely in English. Refusing here is not paranoia about a hypothetical --
    * it is the only place the limit can be enforced at all.
    */
+  /*
+   * Accrued spend first. Per-call limits bound one call; only this bounds a
+   * loop. And unlike the estimate, this figure is real: it is reconciled from
+   * each response's `tool_call_events` rather than guessed in advance.
+   */
+  const spent = ctx.sessionToolSpendMicroUsd ?? 0;
+  const budget = ctx.sessionToolBudgetMicroUsd ?? DEFAULT_SESSION_TOOL_BUDGET_MICRO_USD;
+  if (spent >= budget) {
+    return {
+      verdict: "refuse",
+      reason:
+        `session tool budget exhausted: ${usd(spent)} of ${usd(budget)} already spent on ` +
+        `server-side tools. Raise ANUMA_SESSION_TOOL_BUDGET_MICRO_USD deliberately if that is intended.`,
+    };
+  }
+
   const toolCost = ctx.worstCaseToolMicroUsd ?? 0;
   const toolLimit = ctx.toolCostLimitMicroUsd ?? DEFAULT_TOOL_COST_LIMIT_MICRO_USD;
   if (toolCost > toolLimit) {

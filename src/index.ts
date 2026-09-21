@@ -12,13 +12,22 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { AnumaClient, AnumaError } from "./client.js";
 import { mcpError, categoryForStatus, ValidationError } from "./errors.js";
-import { evaluate, sessionLimitFromEnv, toolCostLimitFromEnv, READ_ONLY_TOOLS } from "./policy.js";
-import { loadRegistry, resolve, toSchema, worstCaseToolCost } from "./tools.js";
+import {
+  evaluate,
+  sessionLimitFromEnv,
+  toolCostLimitFromEnv,
+  sessionToolBudgetFromEnv,
+  READ_ONLY_TOOLS,
+} from "./policy.js";
+import { loadRegistry, reconcile, resolve, toSchema, worstCaseToolCost } from "./tools.js";
 
 const client = new AnumaClient();
 let sessionSpend = 0;
+/** Real server-side tool spend this session, in micro-USD, read off responses. */
+let toolSpendMicroUsd = 0;
 const sessionLimit = sessionLimitFromEnv();
 const toolCostLimit = toolCostLimitFromEnv();
+const sessionToolBudget = sessionToolBudgetFromEnv();
 
 const TOOLS = [
   {
@@ -29,11 +38,20 @@ const TOOLS = [
   {
     name: "anuma_list_models",
     description:
-      "List every model Anuma fronts, across all providers. Returns id, owner and modalities. No auth required.",
+      "Models you can actually use. Defaults to Anuma's 53 curated models, with provider, category, " +
+      "price tier and context window. Membership predicts routability: a curated id works or returns " +
+      'model_tier_required, while a catalogue-only id returns model_not_found. Pass source="catalogue" ' +
+      "for the raw 1007-entry list, most of which will not run.",
     inputSchema: {
       type: "object",
       properties: {
         filter: { type: "string", description: "Case-insensitive substring match on model id." },
+        source: {
+          type: "string",
+          enum: ["curated", "catalogue"],
+          description: 'Default "curated". Use "catalogue" only to see everything Anuma fronts.',
+        },
+        category: { type: "string", description: 'Curated only, e.g. "text", "vision", "image".' },
       },
       additionalProperties: false,
     },
@@ -63,6 +81,13 @@ const TOOLS = [
             required: ["role", "text"],
             additionalProperties: false,
           },
+        },
+        temperature: { type: "number", description: "0.0 to 2.0. Omit for the model default." },
+        max_output_tokens: { type: "number", description: "Cap on generated tokens." },
+        conversation_id: {
+          type: "string",
+          description:
+            "Groups requests for observability. NOT memory -- Anuma does not forward it to the model; resend `messages` for continuity.",
         },
         tools: {
           description:
@@ -105,6 +130,13 @@ const TOOLS = [
   {
     name: "anuma_agent_grants",
     description: "Which agents the user has granted access to their memory, and with what scope.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "anuma_account",
+    description:
+      "Who this credential is, what scopes it holds, and which subscription tier it is on. " +
+      "The tier determines which curated models are reachable, so check here after a model_tier_required error.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -161,6 +193,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     sessionLimit,
     worstCaseToolMicroUsd,
     toolCostLimitMicroUsd: toolCostLimit,
+    sessionToolSpendMicroUsd: toolSpendMicroUsd,
+    sessionToolBudgetMicroUsd: sessionToolBudget,
   });
 
   if (decision.verdict === "refuse") {
@@ -185,6 +219,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (err.traceId) extra.traceId = err.traceId;
       if (err.status === 401) {
         message += " Set ANUMA_API_KEY from an app created at https://dashboard.anuma.ai";
+      } else if (err.code === "model_tier_required") {
+        message += " The model is real but above this plan's tier. Check anuma_account, or pick another from anuma_list_models.";
+      } else if (err.code === "model_not_found") {
+        message += " Not routable. anuma_list_models defaults to the curated list, which is the one that works.";
       } else if (err.billing) {
         const usd = (n: number) => `$${(n / 1_000_000).toFixed(6)}`;
         message +=
@@ -209,10 +247,29 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
     case "anuma_health":
       return client.health();
     case "anuma_list_models": {
-      const { data } = await client.listModels();
       const filter = typeof args.filter === "string" ? args.filter.toLowerCase() : null;
-      const models = filter ? data.filter((m) => m.id.toLowerCase().includes(filter)) : data;
-      return { count: models.length, models };
+
+      if (args.source === "catalogue") {
+        const { data } = await client.listModels();
+        const models = filter ? data.filter((m) => m.id.toLowerCase().includes(filter)) : data;
+        return {
+          count: models.length,
+          note: "Raw catalogue. Most of these return model_not_found; prefer the curated list.",
+          models,
+        };
+      }
+
+      const { models: curated } = await client.curatedModels();
+      let models = curated;
+      if (filter) models = models.filter((m) => m.id.toLowerCase().includes(filter));
+      if (typeof args.category === "string") {
+        models = models.filter((m) => m.category === args.category);
+      }
+      return {
+        count: models.length,
+        note: "Curated models. A model_tier_required error here means the model is real but above your plan -- see anuma_account.",
+        models,
+      };
     }
     case "anuma_respond": {
       if (args.prompt === undefined && args.messages === undefined) {
@@ -229,6 +286,9 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
 
       const want = requestedTools(args);
       const body: Parameters<typeof client.respond>[0] = { model: String(args.model), input };
+      if (typeof args.temperature === "number") body.temperature = args.temperature;
+      if (typeof args.max_output_tokens === "number") body.max_output_tokens = args.max_output_tokens;
+      if (typeof args.conversation_id === "string") body.conversation_id = args.conversation_id;
 
       if (want === "none") {
         // The string form. `tools: []` and `tool_choice: {"type":"none"}` are
@@ -243,7 +303,51 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
         }
         body.tools = found.map(toSchema);
       }
-      return client.respond(body);
+      const raw = await client.respond(body);
+
+      /*
+       * Reconcile. The estimate above is a guess -- Anuma picks and injects
+       * tools itself -- but the response carries the receipt, so charge the
+       * session what the call actually cost rather than a flat 1 per call.
+       */
+      const { invoked, toolMicroUsd } = reconcile(await loadRegistry(client), raw);
+      toolSpendMicroUsd += toolMicroUsd;
+
+      const r = raw as {
+        output?: Array<{ type?: string; content?: Array<{ text?: string }> }>;
+        usage?: Record<string, unknown>;
+      };
+      // `output` can lead with a `reasoning` item, so the message is not
+      // reliably output[0]. Pull every text part in order instead.
+      const text = (r.output ?? [])
+        .filter((o) => o.type !== "reasoning")
+        .flatMap((o) => o.content ?? [])
+        .map((c) => c.text ?? "")
+        .join("")
+        .trim();
+
+      /*
+       * A billed call can legitimately produce no text: a reasoning model
+       * whose `max_output_tokens` is spent on reasoning returns `output: null`
+       * with a usage record and no error. That is an empty result, not a
+       * failure, so it stays a success -- but returning a bare "" would leave
+       * the caller guessing, so say what happened.
+       */
+      const empty = !text;
+      return {
+        text,
+        ...(empty
+          ? {
+              note:
+                "No text was returned. The call still cost credits. With a reasoning model this " +
+                "usually means max_output_tokens was consumed before the message began -- raise it or omit it.",
+            }
+          : {}),
+        toolsInvoked: invoked,
+        toolCostMicroUsd: toolMicroUsd,
+        usage: r.usage,
+        output: r.output ?? null,
+      };
     }
     case "anuma_credits_balance":
       return client.creditsBalance();
@@ -267,6 +371,12 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
     }
     case "anuma_agent_grants":
       return client.agentGrants();
+    case "anuma_account": {
+      // Two reads, because "who am I" and "what may I use" are separate
+      // endpoints and an agent hitting model_tier_required needs both.
+      const [identity, subscription] = await Promise.all([client.me(), client.subscriptionStatus()]);
+      return { identity, subscription };
+    }
     case "anuma_usage":
       return client.usageByModality();
     default:
@@ -277,5 +387,7 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error(
-  `anuma-mcp ready. key=${client.keyMode} limit=${sessionLimit} credits/session`,
+  `anuma-mcp ready. key=${client.keyMode} limit=${sessionLimit} credits/session, ` +
+    `tools<=$${(toolCostLimit / 1_000_000).toFixed(4)}/call, ` +
+    `$${(sessionToolBudget / 1_000_000).toFixed(2)}/session`,
 );

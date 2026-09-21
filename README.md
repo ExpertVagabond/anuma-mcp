@@ -26,6 +26,7 @@ against a funded app. No unverified paths remain. See `STATUS.md`.
 | `anuma_credits_balance` | API key | no |
 | `anuma_zeta_rate` | API key | no |
 | `anuma_usage` | API key | no |
+| `anuma_account` | API key | no |
 | `anuma_agent_grants` | service key | no |
 | `anuma_respond` | API key | **yes** |
 
@@ -108,6 +109,25 @@ defaults `tools` to `"none"`, and you opt in per call:
 Naming tools is also **cheaper than `auto`**: handing Anuma the schema skips its
 own tool search (13,325 → 8,234 prompt tokens for the same answer).
 
+An allowlist is a floor, not a ceiling. A call naming only the weather tool came
+back with `portal_injected_tools: ["AnumaSearchMCP-anuma_text_search"]` -- Anuma
+adds its own tools on top of yours. Only `"none"` is a true ceiling.
+
+Because the estimate cannot be trusted, every response is reconciled against its
+receipt. `anuma_respond` returns what actually ran, and the session accrues real
+spend rather than a flat per-call fiction:
+
+```jsonc
+{ "text": "31",
+  "toolsInvoked": [{ "name": "OpenMeteoMCP-weather_forecast",
+                     "costMicroUsd": 1000, "injectedBy": "client" }],
+  "toolCostMicroUsd": 1000 }
+```
+
+`injectedBy` is `"client"` if you allowed it and `"portal"` if Anuma added it.
+When accrued tool spend reaches `ANUMA_SESSION_TOOL_BUDGET_MICRO_USD` (default
+$1.00) further calls are refused.
+
 `anuma_list_tools` returns name, description and `costMicroUsd`, filterable by
 `filter` and `maxCostMicroUsd`. It strips the embeddings Anuma ships: the raw
 registry is **1.78 MB** of 4096-dimension vectors, about 450k tokens, and would
@@ -154,18 +174,23 @@ enforced limits and never holds the unconstrained credential.
 
 ## Choosing a model
 
-`anuma_list_models` returns 1007 ids. Most of them will not run, and the API
-reports that three different ways:
+There are two model lists, and the big one is mostly a trap.
+`GET /api/v1/models` returns 1007 ids of which most will not run.
+`GET /api/v1/curated-models` returns **53** with real metadata -- provider,
+category, price tier, quality, context window -- and membership there is what
+predicts routability:
 
-| Prefix | Result |
-|---|---|
-| `openrouter/*` | works |
-| `openai/*`, `anthropic/*` | `model_not_found` |
-| `alibaba/*` | `model not available` |
+| Model | Curated? | Result |
+|---|---|---|
+| `glm/glm-5.3` | yes | works |
+| `anthropic/claude-opus-5` | yes | `model_tier_required` (real, above your plan) |
+| `openai/gpt-4o-mini` | catalogue only | `model_not_found` |
 
-Nothing on a catalogue entry (`id`, `created`, `owned_by`, `modalities`)
-predicts which. The id must also be `provider/model`; a bare `gpt-4o` is
-rejected on format. Start from an `openrouter/*` id.
+So `anuma_list_models` returns the curated list by default, filterable by
+`category`; pass `source: "catalogue"` for the raw 1007. The `active` flag on a
+curated model does **not** predict anything -- `active: false` models route
+fine. Ids must be `provider/model`; a bare `gpt-4o` is rejected on format.
+After a `model_tier_required`, `anuma_account` tells you which tier you are on.
 
 Expect a large fixed prompt cost: a seven-word prompt bills ~3,170 prompt
 tokens, because Anuma injects retrieved memory server-side before the model
@@ -197,6 +222,14 @@ Three request fields are accepted, billed and silently ignored. None errors:
 | `tools: []` | disable tools | ignored, tools still run |
 | `tool_choice: {"type":"none"}` | disable tools | ignored, tools still run |
 | `tool_choice: "none"` *(string)* | disable tools | **works** |
+
+Two more shapes worth knowing. Error envelopes are not uniform: alongside
+`{error, type, code, trace_id}` there is a bare
+`{error, model, required_tier}` where the `error` string *is* the code, so a
+client that reads only `.code` loses the one useful discriminator. And a
+response's `output` can lead with a `reasoning` item, or be `null` outright when
+a reasoning model spends `max_output_tokens` before it starts answering -- a
+billed call with no answer and no error.
 
 `input` is a union: a bare string, or a top-level array of messages.
 `{ input: { messages: [...] } }` is rejected as `Invalid request body`. Tool

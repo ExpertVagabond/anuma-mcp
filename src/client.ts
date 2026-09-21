@@ -47,6 +47,20 @@ export interface AnumaClientOptions {
   timeoutMs?: number;
 }
 
+export interface CuratedModel {
+  id: string;
+  name?: string;
+  description?: string;
+  provider?: string;
+  category?: string;
+  price_tier?: string;
+  quality?: string;
+  active?: boolean;
+  featured?: boolean;
+  max_input_tokens?: number;
+  is_private?: boolean;
+}
+
 /** One turn. `content` parts use type "text"; "input_text"/"output_text" are rejected. */
 export interface AnumaMessage {
   role: "user" | "assistant" | "system";
@@ -112,9 +126,18 @@ export class AnumaClient {
     }
 
     if (!res.ok) {
-      // Observed 402 shape, verified 2026-09-20:
-      // {"error":"insufficient_balance","code":"payment_required",
-      //  "required_micro_usd":100,"available_micro_usd":0,"gate":"minimum"}
+      /*
+       * Anuma returns at least two error envelopes, and the second has no
+       * `code` at all:
+       *
+       *   {"error":"insufficient_balance","type":"billing_error",
+       *    "code":"payment_required","required_micro_usd":100,...}
+       *   {"error":"model_tier_required","model":"...","required_tier":"Starter"}
+       *
+       * In the second the `error` string IS the machine-readable code, so
+       * falling back to "unknown" throws away the only useful discriminator
+       * and every model routing failure arrives indistinguishable.
+       */
       const e = parsed as {
         error?: string;
         code?: string;
@@ -122,6 +145,7 @@ export class AnumaClient {
         required_micro_usd?: number;
         available_micro_usd?: number;
         gate?: string;
+        required_tier?: string;
       };
       const billing =
         typeof e?.required_micro_usd === "number"
@@ -131,10 +155,13 @@ export class AnumaClient {
               gate: e.gate ?? "unknown",
             }
           : undefined;
+      const message = e?.required_tier
+        ? `${e.error} (requires the ${e.required_tier} tier)`
+        : (e?.error ?? `HTTP ${res.status}`);
       throw new AnumaError(
         res.status,
-        e?.code ?? "unknown",
-        e?.error ?? `HTTP ${res.status}`,
+        e?.code ?? e?.error ?? "unknown",
+        message,
         e?.trace_id,
         billing,
       );
@@ -179,9 +206,35 @@ export class AnumaClient {
     input: string | AnumaMessage[];
     tools?: AnumaToolSchema[];
     tool_choice?: "none" | "auto";
+    temperature?: number;
+    max_output_tokens?: number;
+    /** Groups requests for observability only. Explicitly NOT forwarded to the provider, so it is not memory. */
+    conversation_id?: string;
     [k: string]: unknown;
   }) {
     return this.request<unknown>("POST", "/api/v1/responses", body);
+  }
+
+  /**
+   * The 53 models Anuma actually curates, with tier and category metadata.
+   *
+   * This, not `/api/v1/models`, is the list worth showing an agent. Membership
+   * here predicts routability: a curated id either works or fails with
+   * `model_tier_required`, while an id that exists only in the 1007-entry
+   * catalogue fails with `model_not_found`.
+   */
+  curatedModels() {
+    return this.request<{ models: CuratedModel[] }>("GET", "/api/v1/curated-models");
+  }
+
+  /** Identity and scopes for the current credential. */
+  me() {
+    return this.request<unknown>("GET", "/api/v1/me");
+  }
+
+  /** Subscription tier, which determines which curated models are reachable. */
+  subscriptionStatus() {
+    return this.request<unknown>("GET", "/api/v1/subscriptions/status");
   }
 
   creditsBalance() {
