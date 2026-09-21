@@ -98,6 +98,16 @@ export function evaluate(ctx: PolicyContext): Decision {
     };
   }
 
+  // Default-deny. A tool in neither set is one nobody has classified, and an
+  // unclassified tool is exactly the one worth refusing: `estimateCredits`
+  // scores it 0, so the ceiling above would wave it through for free.
+  if (!MUTATING_TOOLS.has(ctx.tool)) {
+    return {
+      verdict: "refuse",
+      reason: `unknown tool ${ctx.tool}: not in the policy's read or mutate set, so its cost is unknown. Classify it before allowing it.`,
+    };
+  }
+
   return { verdict: "allow" };
 }
 
