@@ -186,8 +186,19 @@ export class AnumaClient {
     return this.request<unknown>("GET", "/api/v1/usage/by-modality");
   }
 
-  /** Spends ZETA to mint credits. Irreversible. Gated by the policy layer. */
-  redeemTokens(body: Record<string, unknown>) {
-    return this.request<unknown>("POST", "/api/v1/credits/redeem-tokens", body);
-  }
+  /*
+   * There is deliberately no redeemTokens() here.
+   *
+   * `anuma-ai/sdk` publishes `POST /api/v1/credits/redeem-tokens`, and the ZETA
+   * credit rail is documented, but the path 404s on the live API as of 0.155.0.
+   * `credits/redeem`, `credits/redeem_tokens`, `tokens/redeem` and `zeta/redeem`
+   * 404 too, so there is currently no working crypto -> credits route. The
+   * `0x` address on the balance response is an identifier, not a deposit
+   * address; sending ZETA to it funds nothing.
+   *
+   * Shipping a method that posts to a dead path would turn a missing feature
+   * into a runtime error at the worst moment, so the policy branch for
+   * `anuma_redeem_tokens` stays in policy.ts (pre-classified, always escalates)
+   * and the tool stays unregistered until the endpoint exists.
+   */
 }
