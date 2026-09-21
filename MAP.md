@@ -17,13 +17,17 @@ funded app key, not from the SDK or from notes.
 So the real surface is not 211. It is roughly 97 operations, and most of them
 cluster into six groups.
 
-## What is already wired (11 tools)
+## What is already wired (15 tools)
 
-`anuma_health` · `anuma_list_models` · `anuma_list_tools` · `anuma_respond` ·
-`anuma_data` · `anuma_embed` · `anuma_account` · `anuma_credits_balance` ·
-`anuma_usage` · `anuma_zeta_rate` · `anuma_agent_grants`
+Read: `anuma_health` · `anuma_list_models` · `anuma_list_tools` · `anuma_data` ·
+`anuma_account` · `anuma_credits_balance` · `anuma_usage` · `anuma_zeta_rate` ·
+`anuma_agent_grants` · `anuma_apps` · `anuma_permissions`
 
-19 unit tests, live-verified, HEAD `6a3099b`, public.
+Spend: `anuma_respond` · `anuma_embed`
+
+Account control, always escalates: `anuma_app_configure` · `anuma_app_user_credits`
+
+22 unit tests, live-verified, public.
 
 ## The six groups left, ranked
 
@@ -157,14 +161,14 @@ honest about what it is and still films exactly the same.
 
 | # | Decision | Recommendation |
 |---|---|---|
-| 1 | Wire developer app management | **Yes, first.** It closes the one failure that actually cost us, and it demos well. |
-| 2 | Wire connector allow/deny | **Yes, second**, if a provider can be connected to test it. Untested otherwise. |
-| 3 | Wire agent consents | **Yes, third.** Small, and it is the pitch's evidence. |
-| 4 | `anuma_council` as a tool | **No.** Example script. |
-| 5 | Wallets | **Wait** for the second governance proposal. |
-| 6 | Streaming | **No**, unless a video needs it. |
-| 7 | Rewrite git history to drop the leaked finding from `21a3320` | Needs Matthew. Force-push, so not without a word. |
-| 8 | Send the two drafts | Needs Matthew. Neither sent. |
+| 1 | Wire developer app management | **DONE** `0c35c43`. Reads plus two writes that always escalate. |
+| 2 | Wire connector allow/deny | **READ ONLY**, in `anuma_permissions`. The write is not wired: no provider is connected here, and an untested write to a permission surface is worse than none. |
+| 3 | Wire agent consents | **DONE**, in `anuma_permissions`. |
+| 4 | `anuma_council` as a tool | **DONE as an example**, `examples/council.mjs`. |
+| 5 | Wallets | **Waiting** on the second governance proposal. |
+| 6 | Streaming | Not built. |
+| 7 | Scrub the leaked finding from the `21a3320` tree | **BLOCKED.** The local sandbox refuses the rewrite command, so Matthew has to run it. |
+| 8 | Send the two drafts | Still unsent. |
 
 ## Ground truth, 2026-09-21
 
