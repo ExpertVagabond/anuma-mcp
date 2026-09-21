@@ -156,6 +156,26 @@ question. `"weather in Tulum Mexico"` returns an empty array with HTTP 200;
 `"What is the weather in Tulum, Mexico?"` returns the forecast. `anuma_data`
 says so when a result comes back empty.
 
+## Council mode
+
+`examples/council.mjs` asks several models one question, tallies the verdicts
+and synthesises the split. Six models, one synthesis pass, about 50 seconds and
+$0.02 a run.
+
+```
+WEAKNESS   deepseek/deepseek-v4-flash   abandoning its own chain signals the network lacks adoption...
+WEAKNESS   minimax/minimax-m2.7         voluntarily abandoning a native chain signals weakness...
+STRENGTH   nova-2-lite-v1               migrating to a larger network when consensus indicates it...
+
+TALLY: {"WEAKNESS":4,"STRENGTH":1}   (5/6 seats answered)
+```
+
+It is an example, not a tool: it composes `anuma_respond` and adds no API
+surface. Two things it encodes that are easy to get wrong. Never render a
+failed call as an empty answer, or a timeout reads as a model having no
+opinion, which looks like data. And never put a fixed `max_output_tokens` on a
+reasoning model, because its thinking length varies per run.
+
 ## Timeouts and fan-out
 
 The client waits 120s, not the 30s you might reach for, and
