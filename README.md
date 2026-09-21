@@ -156,6 +156,21 @@ question. `"weather in Tulum Mexico"` returns an empty array with HTTP 200;
 `"What is the weather in Tulum, Mexico?"` returns the forecast. `anuma_data`
 says so when a result comes back empty.
 
+## Timeouts and fan-out
+
+The client waits 120s, not the 30s you might reach for, and
+`ANUMA_TIMEOUT_MS` overrides it. Reasoning models think before they answer, and
+running several models concurrently makes the slowest slower still: a six-model
+fan-out had two seats abort at 30s that each completed fine alone. An aborted
+call is reported as `transient` with `isRetryable: true`, so retry it rather
+than concluding the model is dead.
+
+Two related notes for anything that queries several models at once. Never render
+a failed call as an empty answer, or a timeout reads as a model having no
+opinion. And avoid fixed `max_output_tokens` on reasoning models, since their
+thinking length varies per run and a cap that worked yesterday returns `null`
+today.
+
 ## Statelessness
 
 Anuma is stateless between requests via this API. Tell it your codename in one

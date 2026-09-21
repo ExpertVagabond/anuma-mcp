@@ -79,6 +79,12 @@ export interface AnumaToolSchema {
   parameters: Record<string, unknown>;
 }
 
+function timeoutFromEnv(): number {
+  const raw = process.env.ANUMA_TIMEOUT_MS;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 120_000;
+}
+
 export class AnumaClient {
   private readonly apiKey?: string;
   private readonly baseUrl: string;
@@ -87,7 +93,14 @@ export class AnumaClient {
   constructor(opts: AnumaClientOptions = {}) {
     this.apiKey = opts.apiKey ?? process.env.ANUMA_API_KEY;
     this.baseUrl = (opts.baseUrl ?? process.env.ANUMA_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-    this.timeoutMs = opts.timeoutMs ?? 30_000;
+    /*
+     * 30s is too short for this API. Reasoning models think before they answer,
+     * and a fan-out of concurrent calls makes the slowest slower still: a
+     * six-model parallel call had two seats abort at 30s that each completed
+     * fine on their own. The failure is indistinguishable from a dead model
+     * unless you read the error, so the default is 120s and it is tunable.
+     */
+    this.timeoutMs = opts.timeoutMs ?? timeoutFromEnv();
   }
 
   /** True when a key is present. Some endpoints (models, health) work without one. */
