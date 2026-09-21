@@ -2,8 +2,9 @@
 
 Last updated: 2026-09-20
 
-Early. The server runs and the read path is verified against the live API. The
-policy decision is not implemented yet, so tool calls error until it is.
+The server runs, the policy gate is implemented, and every branch is verified
+against the live API. Inference needs a funded app before it can do more than
+return a well-formed 402.
 
 ## Working
 
@@ -51,7 +52,12 @@ billing detail on the error instead of collapsing it to "payment required".
 
 ## Next
 
-1. Implement `evaluate()` in `src/policy.ts`. Blocking.
+1. ~~Implement `evaluate()`~~ **done.** Reads pass freely; `redeem_tokens` always
+   escalates because it burns ZETA irreversibly; inference is allowed under a hard
+   session ceiling rather than escalating every call, because the failure worth
+   preventing is a runaway loop, not one deliberate completion. Verified: reads
+   return live data, redeem escalates, and a live-key completion passes the gate
+   and surfaces Anuma's real 402 as "Needs $0.000100, has $0.000000".
 2. Fund an app so `anuma_respond` can be exercised end to end.
 3. Memory tools. Memory is documented at `docs.anuma.ai/memory` (engine and
    vault) but has no obvious client function in `sdk.gen.ts`, so it may be

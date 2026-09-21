@@ -52,28 +52,53 @@ export const MUTATING_TOOLS = new Set(["anuma_respond", "anuma_redeem_tokens"]);
  * shapes how the whole server feels, so I have left it to you rather than
  * picking a default.
  *
- * The trade-off, concretely:
+ * The rule below is deliberately not "writes are scary". It draws the line where
+ * Anuma's own API draws it:
  *
- *   Permissive  every read allowed, inference allowed up to the session limit,
- *               only `anuma_redeem_tokens` escalates. The demo flows: an agent
- *               genuinely runs on Anuma memory with no babysitting. But a
- *               runaway loop burns real credits against a `live` key, and that
- *               is the exact failure mode the signer work exists to prevent.
+ *   Reads are free. Nothing in the read set can spend or mutate, so an agent
+ *   should be able to explore the model catalogue, tool registry, ZETA rate and
+ *   usage history without asking anyone.
  *
- *   Strict      anything spending on a `live` key escalates. Safe, and it
- *               demos the guarantee clearly, but a human is tapped on the
- *               shoulder for every single inference call, which reads as
- *               friction rather than as a feature.
+ *   Test keys spend nothing, so inference on a `test` key is allowed up to the
+ *   session ceiling. That is what makes the server usable for development.
  *
- * Things worth weighing: `keyMode === "test"` spends nothing, so it can
- * probably be permissive regardless. `redeem_tokens` converts ZETA and is
- * irreversible. `sessionSpend + estimatedCredits > sessionLimit` is the
- * backstop that has to hold no matter what else is decided.
+ *   Inference on a `live` key is allowed, but only under a hard ceiling. The
+ *   failure this prevents is a runaway loop, not a single deliberate call, and
+ *   escalating every completion would make the gate read as friction rather
+ *   than as a guarantee.
  *
- * Roughly 5 to 10 lines. Return one of the three Decision shapes above.
+ *   `redeem_tokens` always escalates. It converts ZETA into credits and cannot
+ *   be undone, so a human confirms regardless of key mode or remaining budget.
+ *
+ * The ceiling is the part that has to hold no matter what else is decided.
  */
 export function evaluate(ctx: PolicyContext): Decision {
-  throw new Error("policy.evaluate not implemented, see TODO above");
+  if (READ_ONLY_TOOLS.has(ctx.tool)) return { verdict: "allow" };
+
+  // Irreversible: burns ZETA. Always a human.
+  if (ctx.tool === "anuma_redeem_tokens") {
+    return {
+      verdict: "escalate",
+      prompt: "Redeeming converts ZETA into credits and cannot be reversed. Confirm the amount explicitly.",
+    };
+  }
+
+  if (ctx.keyMode === "none") {
+    return { verdict: "refuse", reason: "no ANUMA_API_KEY set, refusing to attempt a spend" };
+  }
+
+  // The backstop. Holds for live and test alike so the limit is testable.
+  if (ctx.sessionSpend + ctx.estimatedCredits > ctx.sessionLimit) {
+    return {
+      verdict: "refuse",
+      reason:
+        `session credit ceiling reached: ${ctx.sessionSpend} spent, ` +
+        `this call needs ${ctx.estimatedCredits}, limit ${ctx.sessionLimit}. ` +
+        `Raise ANUMA_SESSION_CREDIT_LIMIT deliberately if that is intended.`,
+    };
+  }
+
+  return { verdict: "allow" };
 }
 
 /** Reads the session ceiling. Defaults low on purpose: a demo should not be able to run up a bill. */

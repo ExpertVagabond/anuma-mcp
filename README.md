@@ -12,9 +12,9 @@ publish one. This is that server.
 
 ## Status
 
-Scaffolded and probing the live API. Not yet usable end to end: the policy
-decision in `src/policy.ts` is unimplemented, and the authenticated tools need
-an API key. See `STATUS.md`.
+Working. All 8 tools run, the policy gate is implemented and verified, and the
+read path is confirmed against the live API. Inference additionally needs a
+funded app. See `STATUS.md`.
 
 ## Tools
 
