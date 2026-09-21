@@ -8,7 +8,13 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluate, sessionLimitFromEnv, type PolicyContext } from "./policy.ts";
+import {
+  evaluate,
+  sessionLimitFromEnv,
+  toolCostLimitFromEnv,
+  DEFAULT_TOOL_COST_LIMIT_MICRO_USD,
+  type PolicyContext,
+} from "./policy.ts";
 
 /** A call that should sail through, so each test varies one field from sane. */
 function ctx(over: Partial<PolicyContext> = {}): PolicyContext {
@@ -98,4 +104,61 @@ test("sessionLimitFromEnv defaults to 100 and rejects junk", () => {
     if (original === undefined) delete process.env.ANUMA_SESSION_CREDIT_LIMIT;
     else process.env.ANUMA_SESSION_CREDIT_LIMIT = original;
   }
+});
+
+test("a call that can reach an expensive server-side tool escalates", () => {
+  // anuma_create_video is 2,400,000 micro-USD. $2.40, from one English sentence.
+  const d = evaluate(ctx({ worstCaseToolMicroUsd: 2_400_000 }));
+  assert.equal(d.verdict, "escalate");
+  assert.match(d.prompt, /\$2\.4000/);
+});
+
+test("cheap tools run unattended, and the boundary is inclusive", () => {
+  // Search, weather, market data and predictions all sit at or under the limit.
+  for (const cost of [0, 1_000, 5_000, 20_000]) {
+    assert.equal(evaluate(ctx({ worstCaseToolMicroUsd: cost })).verdict, "allow", `cost ${cost}`);
+  }
+  assert.equal(evaluate(ctx({ worstCaseToolMicroUsd: 20_001 })).verdict, "escalate");
+});
+
+test("tools off is always allowed, however expensive the registry gets", () => {
+  assert.equal(evaluate(ctx({ worstCaseToolMicroUsd: 0 })).verdict, "allow");
+  // Omitting the field entirely must mean the same thing as zero, not "unknown".
+  const bare = { ...ctx() };
+  delete (bare as Partial<PolicyContext>).worstCaseToolMicroUsd;
+  assert.equal(evaluate(bare).verdict, "allow");
+});
+
+test("an explicit tool-cost limit overrides the default in both directions", () => {
+  // Raised: the video tool becomes routine.
+  assert.equal(
+    evaluate(ctx({ worstCaseToolMicroUsd: 2_400_000, toolCostLimitMicroUsd: 3_000_000 })).verdict,
+    "allow",
+  );
+  // Zeroed: every tool with any cost needs a human.
+  assert.equal(
+    evaluate(ctx({ worstCaseToolMicroUsd: 1, toolCostLimitMicroUsd: 0 })).verdict,
+    "escalate",
+  );
+});
+
+test("the tool-cost gate sits ahead of the session ceiling, so the reason names the real cause", () => {
+  // Both limits are blown. The expensive-tool escalation is the more
+  // actionable answer, and an escalation can be approved where a refusal
+  // cannot, so it must win.
+  const d = evaluate(ctx({ worstCaseToolMicroUsd: 2_400_000, sessionSpend: 999, sessionLimit: 1 }));
+  assert.equal(d.verdict, "escalate");
+});
+
+test("toolCostLimitFromEnv defaults to $0.02 and rejects junk", () => {
+  const prev = process.env.ANUMA_MAX_TOOL_COST_MICRO_USD;
+  delete process.env.ANUMA_MAX_TOOL_COST_MICRO_USD;
+  assert.equal(toolCostLimitFromEnv(), DEFAULT_TOOL_COST_LIMIT_MICRO_USD);
+  assert.equal(DEFAULT_TOOL_COST_LIMIT_MICRO_USD, 20_000);
+  process.env.ANUMA_MAX_TOOL_COST_MICRO_USD = "not-a-number";
+  assert.equal(toolCostLimitFromEnv(), DEFAULT_TOOL_COST_LIMIT_MICRO_USD);
+  process.env.ANUMA_MAX_TOOL_COST_MICRO_USD = "0";
+  assert.equal(toolCostLimitFromEnv(), 0, "an explicit zero is a real limit, not junk");
+  if (prev === undefined) delete process.env.ANUMA_MAX_TOOL_COST_MICRO_USD;
+  else process.env.ANUMA_MAX_TOOL_COST_MICRO_USD = prev;
 });

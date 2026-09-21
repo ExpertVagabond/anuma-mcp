@@ -1,6 +1,6 @@
 # STATUS
 
-Last updated: 2026-09-21
+Last updated: 2026-09-21 (second pass)
 
 The server runs, the policy gate is implemented, and every branch is verified
 against the live API -- including inference, end to end over stdio, against a
@@ -52,19 +52,36 @@ billing detail on the error instead of collapsing it to "payment required".
 
 ## Next
 
-1. ~~Implement `evaluate()`~~ **done.** Reads pass freely; `redeem_tokens` always
-   escalates because it burns ZETA irreversibly; inference is allowed under a hard
-   session ceiling rather than escalating every call, because the failure worth
-   preventing is a runaway loop, not one deliberate completion.
+1. ~~Implement `evaluate()`~~ **done.**
 2. ~~Fund an app so `anuma_respond` can be exercised end to end.~~ **done 9/21.**
-   `tools/call anuma_respond` -> model returned "ok", balance 1000 -> 999,
-   `credits_used: 1`. The error envelope was exercised on the same run.
-3. Memory tools. Memory is documented at `docs.anuma.ai/memory` (engine and
-   vault) but has no obvious client function in `sdk.gen.ts`. The usage numbers
-   below now say it is not optional plumbing -- it is the product -- so this is
-   worth a real read.
-4. Report the four API findings below to Anuma. Each is a small, specific,
-   reproducible bug report, which is a better opening than an introduction.
+3. ~~Memory tools.~~ **Closed: there is nothing to wire.** The public SDK has 171
+   endpoints and not one memory or vault path; the `*MemoryOp` names in the repo
+   are server-side ops, not HTTP routes. `conversation_id` is documented
+   "pass-through only, not forwarded to the LLM provider". Tested directly:
+   state a fact, ask in a fresh request, and the model has never heard it.
+   Continuity is the client's job, so `anuma_respond` now takes `messages`.
+4. ~~Explicit tool invocation.~~ **done 9/21.** `tools` accepts `"none"`
+   (default), `"auto"`, or exact registry names.
+5. Ask Anuma for a service key. `agent-grants` still 401s, and that endpoint is
+   the server-side half of the same permission story this gate implements
+   client-side. It is the most interesting thing still out of reach.
+6. Streaming (`stream: true`) and `background: true` are in the request schema
+   and untouched here. Streaming would matter for a live demo.
+
+## What the second pass changed
+
+- **`anuma_list_tools` was returning 1.78 MB.** Every registry entry carries a
+  4096-dimension embedding for Anuma's tool search. That is ~450k tokens into an
+  agent's context, i.e. the tool was unusable by the thing it exists for. Now
+  58 KB of name, description and cost.
+- **The gate now prices what a call can reach.** Tool costs span $0.00 to $2.40.
+  Pricing every `anuma_respond` at a flat 1 credit under-counted the video tool
+  by 240x. `ANUMA_MAX_TOOL_COST_MICRO_USD` (default $0.02) escalates anything
+  dearer, which cleanly separates the read-shaped tools from the media ones.
+- **Validation errors were reported as retryable.** A bad tool name or a missing
+  prompt fell to the generic catch and came back `transient, isRetryable: true`,
+  inviting an agent to loop on a call that can never succeed. Now `validation`.
+- **Multi-turn works**, via `input` as a top-level array.
 
 ## Funding, resolved 2026-09-21
 
@@ -82,6 +99,12 @@ Billing is two-tier and the tiers fail identically in the UI:
 drained".
 
 ## Findings worth reporting
+
+0. **Three request fields are accepted, billed and silently ignored**: top-level
+   `messages`, `tools: []`, and `tool_choice: {"type":"none"}`. The last two
+   matter most -- a caller trying to disable server-side tools by the obvious
+   routes gets no error and still pays for the tools. Only the string
+   `tool_choice: "none"` works.
 
 1. **`messages` is accepted, billed, and silently dropped.** `POST
    /api/v1/responses` takes `input`. Send `messages` instead -- either the plain

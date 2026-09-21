@@ -74,6 +74,63 @@ means never funded, non-zero means funded and drained.
 claude mcp add anuma -- node ~/projects/anuma-mcp/dist/index.js
 ```
 
+## Server-side tools
+
+Anuma does not just complete text. It searches its own registry of 42 MCP-backed
+tools, picks one, **executes it server-side**, and bills you. Ask for the weather
+and you get a real number, from a real call you never made:
+
+```
+prompt "say ok"                   3,173 prompt tokens   (tool-search harness)
+prompt "weather in Tulum"        13,325 prompt tokens   (harness + search + execution)
+```
+
+That is the product. It is also the problem, because the registry spans **$0.00
+to $2.40 a call**:
+
+| Tool | Cost |
+|---|---|
+| `AnumaMediaMCP-anuma_create_video` | $2.40 |
+| `AnumaMediaMCP-anuma_create_music` | $2.00 |
+| `AnumaPaymentsMCP-anuma_paid_web_search` | $0.02 |
+| `OpenMeteoMCP-*`, `AnumaJinaMCP-search_web` | $0.001 |
+| `AnumaVisionMCP-anuma_analyze_image`, `PredictionsMCP-market_detail` | free |
+
+An agent can reach the $2.40 one by asking in English. So `anuma_respond`
+defaults `tools` to `"none"`, and you opt in per call:
+
+```jsonc
+{ "model": "openrouter/amazon/nova-2-lite-v1", "prompt": "..." }                      // no tools, cheapest
+{ "model": "...", "prompt": "...", "tools": ["OpenMeteoMCP-weather_forecast"] }       // named, gated on cost
+{ "model": "...", "prompt": "...", "tools": "auto" }                                  // all 42 -> escalates
+```
+
+Naming tools is also **cheaper than `auto`**: handing Anuma the schema skips its
+own tool search (13,325 → 8,234 prompt tokens for the same answer).
+
+`anuma_list_tools` returns name, description and `costMicroUsd`, filterable by
+`filter` and `maxCostMicroUsd`. It strips the embeddings Anuma ships: the raw
+registry is **1.78 MB** of 4096-dimension vectors, about 450k tokens, and would
+blow the context window of anything that asked for it. Slimmed, it is 58 KB.
+
+## Statelessness
+
+Anuma is stateless between requests via this API. Tell it your codename in one
+call and it does not know in the next -- the ~3,173 baseline tokens are the tool
+harness, not your history. `conversation_id` exists but the schema says
+"pass-through only, not forwarded to the LLM provider": observability, not
+memory. There are no memory or vault endpoints in the public SDK's 171 paths.
+
+Continuity is therefore the client's job, which `anuma_respond` supports by
+resending turns:
+
+```jsonc
+{ "model": "...", "messages": [
+  { "role": "user", "text": "My project codename is Kestrel." },
+  { "role": "assistant", "text": "Noted, Kestrel." },
+  { "role": "user", "text": "What is my project codename?" } ] }
+```
+
 ## The policy gate
 
 Anuma already has the server-side half of agent permissions
@@ -82,6 +139,15 @@ the client-side half, so the limit holds even when an agent is the one
 composing the calls. Every tool call is evaluated to `allow`, `escalate` or
 `refuse` before it reaches the network, and a session credit ceiling
 (`ANUMA_SESSION_CREDIT_LIMIT`, default 100) backstops the whole thing.
+
+Because Anuma runs tools itself, the gate also prices what a call can *reach*:
+if the worst-case tool costs more than `ANUMA_MAX_TOOL_COST_MICRO_USD` (default
+20,000, i.e. $0.02) the call escalates for human approval rather than running.
+That threshold clears every search, weather, market-data and prediction tool and
+stops all six media tools. This is the only place such a limit can be enforced:
+`tools: []` and `tool_choice: {"type":"none"}` are both accepted and silently
+ignored by the API, and the string `tool_choice: "none"` -- the one form that
+works -- is a client-side decision.
 
 Same shape as a policy-gated transaction signer: the agent works inside
 enforced limits and never holds the unconstrained credential.
@@ -123,9 +189,19 @@ reported by `/health`:
   SDK. No working crypto → credits route exists today, so this server does not
   ship a method that posts to it.
 
-The prompt field on `/api/v1/responses` is `input`. A `messages` array is
-accepted and billed, but its text never reaches the model, which answers an
-empty prompt with HTTP 200 and a well-formed body. This server never sends it.
+Three request fields are accepted, billed and silently ignored. None errors:
+
+| Sent | Intent | What happens |
+|---|---|---|
+| top-level `messages` | multi-turn | billed, model sees an empty prompt |
+| `tools: []` | disable tools | ignored, tools still run |
+| `tool_choice: {"type":"none"}` | disable tools | ignored, tools still run |
+| `tool_choice: "none"` *(string)* | disable tools | **works** |
+
+`input` is a union: a bare string, or a top-level array of messages.
+`{ input: { messages: [...] } }` is rejected as `Invalid request body`. Tool
+schemas must be flat (`{type, name, description, parameters}`); the nested
+OpenAI form `{type, function:{...}}` is rejected upstream.
 
 Endpoint paths are taken from
 [`anuma-ai/sdk`](https://github.com/anuma-ai/sdk) `src/client/sdk.gen.ts`, MIT.

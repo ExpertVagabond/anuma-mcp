@@ -47,6 +47,24 @@ export interface AnumaClientOptions {
   timeoutMs?: number;
 }
 
+/** One turn. `content` parts use type "text"; "input_text"/"output_text" are rejected. */
+export interface AnumaMessage {
+  role: "user" | "assistant" | "system";
+  content: Array<{ type: "text"; text: string }>;
+}
+
+/**
+ * A tool offered to the model, FLAT. The nested OpenAI form
+ * `{type:"function", function:{...}}` is rejected upstream with
+ * "The upstream model provider rejected the request".
+ */
+export interface AnumaToolSchema {
+  type: "function";
+  name: string;
+  description?: string;
+  parameters: Record<string, unknown>;
+}
+
 export class AnumaClient {
   private readonly apiKey?: string;
   private readonly baseUrl: string;
@@ -147,16 +165,22 @@ export class AnumaClient {
   /**
    * Inference. The prompt field is `input`, NOT `messages`.
    *
-   * Verified live 2026-09-21: a `messages` array is accepted, billed and
-   * answered, but its text never reaches the model -- the completion comes
-   * back addressed to an empty prompt. Both the OpenAI chat shape
-   * (`content: "text"`) and the content-part shape (`content: [{type,text}]`)
-   * are dropped the same silent way. There is no error to catch, so the only
-   * safe move is to never send that field.
+   * Verified live 2026-09-21. `input` is a union with custom unmarshalling:
+   * a bare string for one turn, or a top-level ARRAY of messages for
+   * multi-turn. A top-level `messages` key is accepted, billed and answered,
+   * but its text never reaches the model -- the completion comes back
+   * addressed to an empty prompt. `{ input: { messages: [...] } }` is rejected
+   * outright as `Invalid request body`. Only the two forms below work.
    *
    * `model` must be `provider/model`; a bare id is rejected on format.
    */
-  respond(body: { model: string; input: string; [k: string]: unknown }) {
+  respond(body: {
+    model: string;
+    input: string | AnumaMessage[];
+    tools?: AnumaToolSchema[];
+    tool_choice?: "none" | "auto";
+    [k: string]: unknown;
+  }) {
     return this.request<unknown>("POST", "/api/v1/responses", body);
   }
 

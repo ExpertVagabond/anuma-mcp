@@ -31,6 +31,13 @@ export interface PolicyContext {
   sessionSpend: number;
   /** Hard ceiling for one session, from ANUMA_SESSION_CREDIT_LIMIT. */
   sessionLimit: number;
+  /**
+   * Worst-case cost in micro-USD of any server-side tool this call can reach.
+   * 0 when tools are off. Undefined for tools that cannot invoke any.
+   */
+  worstCaseToolMicroUsd?: number;
+  /** Ceiling for that, from ANUMA_MAX_TOOL_COST_MICRO_USD. */
+  toolCostLimitMicroUsd?: number;
 }
 
 /** Tools that only read. Never spend, never mutate. */
@@ -46,6 +53,25 @@ export const READ_ONLY_TOOLS = new Set([
 
 /** Tools that move value or change account state. */
 export const MUTATING_TOOLS = new Set(["anuma_respond", "anuma_redeem_tokens"]);
+
+/**
+ * Default ceiling on a single call's reachable tool cost: $0.02 in micro-USD.
+ *
+ * Sized to clear every search, weather, market-data and prediction tool
+ * (<= 20,000) while stopping the media tools dead: image is 15,000 but
+ * background-removal is 18,000, sfx 140,000, music 2,000,000 and video
+ * 2,400,000. So the cheap, read-shaped half of the registry runs unattended
+ * and anything that can bill dollars needs a human.
+ */
+export const DEFAULT_TOOL_COST_LIMIT_MICRO_USD = 20_000;
+
+export function toolCostLimitFromEnv(): number {
+  const raw = process.env.ANUMA_MAX_TOOL_COST_MICRO_USD;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_TOOL_COST_LIMIT_MICRO_USD;
+}
+
+const usd = (micro: number) => `$${(micro / 1_000_000).toFixed(4)}`;
 
 /**
  * TODO(matthew): implement the decision rule. This is the design call that
@@ -85,6 +111,34 @@ export function evaluate(ctx: PolicyContext): Decision {
 
   if (ctx.keyMode === "none") {
     return { verdict: "refuse", reason: "no ANUMA_API_KEY set, refusing to attempt a spend" };
+  }
+
+  /*
+   * Server-side tool cost.
+   *
+   * This is the branch the API forces on us. Anuma executes tools itself: the
+   * caller sends one innocuous string, Anuma decides a tool is warranted, runs
+   * it, and bills for it. `tools: []` does not switch that off and neither
+   * does `tool_choice: {"type":"none"}` -- both are accepted and ignored. The
+   * ONLY working kill switch is the string `tool_choice: "none"`, which is a
+   * client-side choice, which is to say this gate.
+   *
+   * So the worst case for an unconstrained call is the most expensive tool in
+   * the registry, currently $2.40 of video generation, reachable by asking
+   * nicely in English. Refusing here is not paranoia about a hypothetical --
+   * it is the only place the limit can be enforced at all.
+   */
+  const toolCost = ctx.worstCaseToolMicroUsd ?? 0;
+  const toolLimit = ctx.toolCostLimitMicroUsd ?? DEFAULT_TOOL_COST_LIMIT_MICRO_USD;
+  if (toolCost > toolLimit) {
+    return {
+      verdict: "escalate",
+      prompt:
+        `this call can reach a server-side tool costing up to ${usd(toolCost)}, ` +
+        `over the ${usd(toolLimit)} limit. Anuma runs tools itself and bills for them, ` +
+        `so confirm deliberately, name the tools explicitly, or set tools to "none". ` +
+        `Raise ANUMA_MAX_TOOL_COST_MICRO_USD if this should be routine.`,
+    };
   }
 
   // The backstop. Holds for live and test alike so the limit is testable.

@@ -18,6 +18,20 @@
 
 export type ErrorCategory = "transient" | "validation" | "business" | "permission";
 
+/**
+ * A caller mistake, caught locally before any network call.
+ *
+ * Without this, a bad argument falls to the generic catch and is reported as
+ * `transient` with `isRetryable: true` -- telling an agent to retry a call
+ * that cannot ever succeed. An agent that believes that will loop.
+ */
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
+
 export interface McpErrorResult {
   // Index signature so the shape satisfies the MCP SDK's ServerResult union,
   // which otherwise tries to match the task-shaped variant and complains.
