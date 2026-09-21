@@ -210,6 +210,8 @@ export class AnumaClient {
     max_output_tokens?: number;
     /** Groups requests for observability only. Explicitly NOT forwarded to the provider, so it is not memory. */
     conversation_id?: string;
+    reasoning?: { effort?: "low" | "medium" | "high"; summary?: "auto" | "concise" | "detailed" };
+    thinking?: { type?: "enabled" | "disabled"; budget_tokens?: number };
     [k: string]: unknown;
   }) {
     return this.request<unknown>("POST", "/api/v1/responses", body);
@@ -225,6 +227,27 @@ export class AnumaClient {
    */
   curatedModels() {
     return this.request<{ models: CuratedModel[] }>("GET", "/api/v1/curated-models");
+  }
+
+  /**
+   * Preprocessors: structured data from a natural-language question, with no
+   * model in the loop.
+   *
+   * Verified free 2026-09-21: three calls moved request_count, cost_usd and
+   * the credit balance by exactly zero. They do not even register as requests.
+   * The equivalent registry tools cost 1,000 to 5,000 micro-USD each AND need
+   * an inference call to drive them, so for weather, prices and search this is
+   * strictly the cheaper route.
+   */
+  preprocess(kind: "weather" | "crypto-prices" | "stock-prices" | "search", q: string, limit?: number) {
+    const body: { q: string; limit?: number } = { q };
+    if (typeof limit === "number") body.limit = limit;
+    return this.request<unknown>("POST", `/api/v1/preprocessors/${kind}`, body);
+  }
+
+  /** Embeddings. Returns an `inference_id` alongside the vectors. */
+  embed(body: { model: string; input: string | string[]; dimensions?: number }) {
+    return this.request<unknown>("POST", "/api/v1/embeddings", body);
   }
 
   /** Identity and scopes for the current credential. */

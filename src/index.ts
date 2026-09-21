@@ -84,6 +84,11 @@ const TOOLS = [
         },
         temperature: { type: "number", description: "0.0 to 2.0. Omit for the model default." },
         max_output_tokens: { type: "number", description: "Cap on generated tokens." },
+        reasoning_effort: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+          description: "Reasoning models only. Raise max_output_tokens with it, or the answer is spent on thinking.",
+        },
         conversation_id: {
           type: "string",
           description:
@@ -131,6 +136,45 @@ const TOOLS = [
     name: "anuma_agent_grants",
     description: "Which agents the user has granted access to their memory, and with what scope.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "anuma_data",
+    description:
+      "Structured live data from a plain-English question: weather, crypto prices, stock prices, web search. " +
+      "Free and model-free, so prefer it over anuma_respond with tools for these four. Does not spend credits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["weather", "crypto-prices", "stock-prices", "search"] },
+        q: {
+          type: "string",
+          description:
+            "A complete question, e.g. 'What is the weather in Tulum, Mexico?'. These are intent " +
+            "extractors, not keyword search: a bare phrase like 'weather in Tulum Mexico' returns " +
+            "nothing. Max 500 chars, 400 for search.",
+        },
+        limit: { type: "number", description: "Search only. Default 5, max 10." },
+      },
+      required: ["kind", "q"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "anuma_embed",
+    description: "Embed text. Returns vectors plus an inference_id. Spends credits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        model: { type: "string", description: "Embedding model id, e.g. jina/jina-embeddings-v3." },
+        input: {
+          description: "Text, or an array of texts to embed in one call.",
+          oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
+        },
+        dimensions: { type: "number", description: "Optional output dimensionality." },
+      },
+      required: ["model", "input"],
+      additionalProperties: false,
+    },
   },
   {
     name: "anuma_account",
@@ -289,6 +333,9 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
       if (typeof args.temperature === "number") body.temperature = args.temperature;
       if (typeof args.max_output_tokens === "number") body.max_output_tokens = args.max_output_tokens;
       if (typeof args.conversation_id === "string") body.conversation_id = args.conversation_id;
+      if (typeof args.reasoning_effort === "string") {
+        body.reasoning = { effort: args.reasoning_effort as "low" | "medium" | "high" };
+      }
 
       if (want === "none") {
         // The string form. `tools: []` and `tool_choice: {"type":"none"}` are
@@ -371,6 +418,37 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
     }
     case "anuma_agent_grants":
       return client.agentGrants();
+    case "anuma_data": {
+      const result = (await client.preprocess(
+        args.kind as "weather" | "crypto-prices" | "stock-prices" | "search",
+        String(args.q),
+        typeof args.limit === "number" ? args.limit : undefined,
+      )) as Record<string, unknown>;
+
+      /*
+       * These endpoints extract intent from the question rather than matching
+       * keywords, and when they fail to they return an empty array with HTTP
+       * 200. That is a legitimate empty result, not an error, so it stays a
+       * success -- but an agent that gets `[]` back deserves to know the
+       * likeliest cause is phrasing rather than an absence of weather.
+       */
+      const rows = Object.values(result).find(Array.isArray) as unknown[] | undefined;
+      if (rows && rows.length === 0) {
+        return {
+          ...result,
+          note:
+            "Empty result. These endpoints parse intent, so phrase `q` as a complete question " +
+            "(\"What is the weather in Tulum, Mexico?\") rather than a bare phrase.",
+        };
+      }
+      return result;
+    }
+    case "anuma_embed":
+      return client.embed({
+        model: String(args.model),
+        input: Array.isArray(args.input) ? (args.input as string[]).map(String) : String(args.input),
+        ...(typeof args.dimensions === "number" ? { dimensions: args.dimensions } : {}),
+      });
     case "anuma_account": {
       // Two reads, because "who am I" and "what may I use" are separate
       // endpoints and an agent hitting model_tier_required needs both.

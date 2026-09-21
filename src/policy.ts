@@ -54,10 +54,12 @@ export const READ_ONLY_TOOLS = new Set([
   "anuma_agent_grants",
   "anuma_usage",
   "anuma_account",
+  // Free and model-free: verified to move neither credits nor request_count.
+  "anuma_data",
 ]);
 
 /** Tools that move value or change account state. */
-export const MUTATING_TOOLS = new Set(["anuma_respond", "anuma_redeem_tokens"]);
+export const MUTATING_TOOLS = new Set(["anuma_respond", "anuma_redeem_tokens", "anuma_embed"]);
 
 /**
  * Default ceiling on a single call's reachable tool cost: $0.02 in micro-USD.

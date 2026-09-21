@@ -26,6 +26,8 @@ against a funded app. No unverified paths remain. See `STATUS.md`.
 | `anuma_credits_balance` | API key | no |
 | `anuma_zeta_rate` | API key | no |
 | `anuma_usage` | API key | no |
+| `anuma_data` | API key | **no, free** |
+| `anuma_embed` | API key | yes |
 | `anuma_account` | API key | no |
 | `anuma_agent_grants` | service key | no |
 | `anuma_respond` | API key | **yes** |
@@ -132,6 +134,27 @@ $1.00) further calls are refused.
 `filter` and `maxCostMicroUsd`. It strips the embeddings Anuma ships: the raw
 registry is **1.78 MB** of 4096-dimension vectors, about 450k tokens, and would
 blow the context window of anything that asked for it. Slimmed, it is 58 KB.
+
+## Free structured data
+
+Four endpoints answer a plain-English question with structured JSON and no model
+in the loop: weather, crypto prices, stock prices, web search. Verified free on
+2026-09-21 -- three calls moved `request_count`, `cost_usd` and the credit
+balance by exactly zero. They do not even register as requests.
+
+```jsonc
+{ "kind": "weather", "q": "What is the weather in Tulum, Mexico?" }
+{ "kind": "crypto-prices", "q": "bitcoin and solana price" }
+```
+
+For these four questions this is strictly cheaper than `anuma_respond` with
+tools, where the registry equivalents cost $0.001 to $0.005 *plus* an inference
+call to drive them.
+
+They extract intent rather than matching keywords, so `q` must be a complete
+question. `"weather in Tulum Mexico"` returns an empty array with HTTP 200;
+`"What is the weather in Tulum, Mexico?"` returns the forecast. `anuma_data`
+says so when a result comes back empty.
 
 ## Statelessness
 
