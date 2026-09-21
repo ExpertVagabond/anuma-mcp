@@ -113,10 +113,7 @@ drained".
 
 ## Findings worth reporting
 
-0. **`/api/v1/usage/inference-weekly` appears to return platform-wide figures
-   to any app key** -- 5,352 requests and 71.4M tokens for a week in which this
-   app made 22 requests. Report privately, not publicly.
-0b. **Three request fields are accepted, billed and silently ignored**: top-level
+0. **Three request fields are accepted, billed and silently ignored**: top-level
    `messages`, `tools: []`, and `tool_choice: {"type":"none"}`. The last two
    matter most -- a caller trying to disable server-side tools by the obvious
    routes gets no error and still pays for the tools. Only the string
