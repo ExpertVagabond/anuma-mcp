@@ -11,6 +11,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { AnumaClient, AnumaError } from "./client.js";
+import { mcpError, categoryForStatus } from "./errors.js";
 import { evaluate, sessionLimitFromEnv, READ_ONLY_TOOLS } from "./policy.js";
 
 const client = new AnumaClient();
@@ -103,13 +104,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   });
 
   if (decision.verdict === "refuse") {
-    return { isError: true, content: [{ type: "text", text: `Refused by policy: ${decision.reason}` }] };
+    return mcpError("permission", `Refused by policy: ${decision.reason}`, { policy: "refuse" });
   }
   if (decision.verdict === "escalate") {
-    return {
-      isError: true,
-      content: [{ type: "text", text: `Needs human approval: ${decision.prompt}` }],
-    };
+    return mcpError("permission", `Needs human approval: ${decision.prompt}`, {
+      policy: "escalate",
+      requiresHumanApproval: true,
+    });
   }
 
   try {
@@ -118,21 +119,23 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   } catch (err) {
     if (err instanceof AnumaError) {
-      let hint = "";
+      const category = categoryForStatus(err.status);
+      let message = `Anuma ${err.status} ${err.code}: ${err.message}.`;
+      const extra: Record<string, unknown> = { httpStatus: err.status, anumaCode: err.code };
+      if (err.traceId) extra.traceId = err.traceId;
       if (err.status === 401) {
-        hint = " Set ANUMA_API_KEY from an app created at https://dashboard.anuma.ai";
+        message += " Set ANUMA_API_KEY from an app created at https://dashboard.anuma.ai";
       } else if (err.billing) {
         const usd = (n: number) => `$${(n / 1_000_000).toFixed(6)}`;
-        hint =
+        message +=
           ` Needs ${usd(err.billing.requiredMicroUsd)}, has ${usd(err.billing.availableMicroUsd)}` +
           ` (gate: ${err.billing.gate}). Fund the app or lock ZETA for credits.`;
+        extra.billing = err.billing;
       }
-      return {
-        isError: true,
-        content: [{ type: "text", text: `Anuma ${err.status} ${err.code}: ${err.message}.${hint}` }],
-      };
+      return mcpError(category, message, extra);
     }
-    throw err;
+    // Network-level failures (DNS, socket, abort) are worth retrying.
+    return mcpError("transient", `Request failed: ${(err as Error).message}`);
   }
 });
 
