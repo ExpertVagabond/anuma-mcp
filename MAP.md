@@ -136,9 +136,13 @@ webhooks (3, inbound from RevenueCat), user API keys (3, overlaps developer).
 
 ## What not to build
 
-- **Memory tools.** Closed, permanently. There is no memory or vault path in the
-  spec's 181. Anuma is stateless over this API and `conversation_id` is
-  observability only. Continuity is `messages`, which is already wired.
+- **Memory as an API call.** There is no memory or vault path in the spec's 181,
+  and there will not be: the engine is client-side in `anuma-ai/sdk`
+  (`src/lib/memory/`, over a local encrypted vault), and
+  `assembleMemoryContext()` builds the prompt before the request is sent. So
+  memory is not "closed" -- it is a **build**, and the largest one available
+  here. Porting it is how this server would stop being a thin client. Today it
+  offers multi-turn instead, which is already wired.
 - **`redeem_tokens`.** The endpoint 404s. The policy branch stays pre-classified
   for when it exists.
 - **Anything under admin or internal.** 73 operations we cannot reach.
