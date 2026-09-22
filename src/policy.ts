@@ -58,6 +58,10 @@ export const READ_ONLY_TOOLS = new Set([
   "anuma_data",
   "anuma_apps",
   "anuma_permissions",
+  // Local-only: these touch a file on this machine and never the network.
+  "anuma_recall",
+  "anuma_remember",
+  "anuma_forget",
 ]);
 
 /** Tools that move value or change account state. */

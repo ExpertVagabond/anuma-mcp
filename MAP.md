@@ -17,7 +17,7 @@ funded app key, not from the SDK or from notes.
 So the real surface is not 211. It is roughly 97 operations, and most of them
 cluster into six groups.
 
-## What is already wired (15 tools)
+## What is already wired (18 tools)
 
 Read: `anuma_health` · `anuma_list_models` · `anuma_list_tools` · `anuma_data` ·
 `anuma_account` · `anuma_credits_balance` · `anuma_usage` · `anuma_zeta_rate` ·
@@ -25,9 +25,11 @@ Read: `anuma_health` · `anuma_list_models` · `anuma_list_tools` · `anuma_data
 
 Spend: `anuma_respond` · `anuma_embed`
 
+Local memory, no network: `anuma_remember` · `anuma_recall` · `anuma_forget`
+
 Account control, always escalates: `anuma_app_configure` · `anuma_app_user_credits`
 
-22 unit tests, live-verified, public.
+33 unit tests, live-verified, public.
 
 ## The six groups left, ranked
 
@@ -140,9 +142,11 @@ webhooks (3, inbound from RevenueCat), user API keys (3, overlaps developer).
   and there will not be: the engine is client-side in `anuma-ai/sdk`
   (`src/lib/memory/`, over a local encrypted vault), and
   `assembleMemoryContext()` builds the prompt before the request is sent. So
-  memory is not "closed" -- it is a **build**, and the largest one available
-  here. Porting it is how this server would stop being a thin client. Today it
-  offers multi-turn instead, which is already wired.
+  **BUILT 2026-09-21** as `src/memory.ts`: a local vault with typed facts, decay
+  measured from last use, overlap-first recall and de-duplication, wired into
+  `anuma_respond` via `memory: true`. Not a port of the SDK's engine, a
+  reimplementation of its shape. Still missing from the original: embeddings
+  rather than term overlap, entity extraction, and consolidation.
 - **`redeem_tokens`.** The endpoint 404s. The policy branch stays pre-classified
   for when it exists.
 - **Anything under admin or internal.** 73 operations we cannot reach.

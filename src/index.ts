@@ -20,6 +20,7 @@ import {
   READ_ONLY_TOOLS,
 } from "./policy.js";
 import { loadRegistry, reconcile, resolve, toSchema, worstCaseToolCost } from "./tools.js";
+import * as mem from "./memory.js";
 
 const client = new AnumaClient();
 let sessionSpend = 0;
@@ -93,6 +94,12 @@ const TOOLS = [
           type: "string",
           description:
             "Groups requests for observability. NOT memory -- Anuma does not forward it to the model; resend `messages` for continuity.",
+        },
+        memory: {
+          type: "boolean",
+          description:
+            "Recall relevant facts from the local vault and prepend them to the prompt. Default false. " +
+            "Anuma never sees the vault, only the assembled text.",
         },
         tools: {
           description:
@@ -173,6 +180,48 @@ const TOOLS = [
         dimensions: { type: "number", description: "Optional output dimensionality." },
       },
       required: ["model", "input"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "anuma_remember",
+    description:
+      "Store a fact in the local memory vault. Anuma's API is stateless by design, so memory lives here. " +
+      "Type sets how long it survives: identity never expires, preference a year, project 90 days, event 14 days.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The fact, stated plainly." },
+        type: { type: "string", enum: ["identity", "preference", "project", "event"] },
+      },
+      required: ["text", "type"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "anuma_recall",
+    description:
+      "Search the local memory vault. Scores by term overlap first, then recency and use, and drops " +
+      "near-duplicates. Recalling a fact extends its life.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        limit: { type: "number", description: "Default 5." },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "anuma_forget",
+    description: "Delete one fact by id, or prune everything already expired. Local only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Fact id from anuma_recall. Omit with prune:true." },
+        prune: { type: "boolean", description: "Drop every expired fact instead of one by id." },
+      },
       additionalProperties: false,
     },
   },
@@ -383,8 +432,33 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
           }))
         : String(args.prompt);
 
+      // Memory is assembled here, before the request leaves. Anuma sees the
+      // resulting text and never the vault, which is the same division the SDK
+      // draws and the reason the API is stateless in the first place.
+      let recalled: mem.Fact[] = [];
+      if (args.memory === true) {
+        const v = mem.load();
+        const probe = Array.isArray(args.messages)
+          ? (args.messages as Array<{ text: string }>).map((m) => m.text).join(" ")
+          : String(args.prompt ?? "");
+        recalled = mem.recall(v, probe);
+        if (recalled.length) mem.save(mem.touch(v, recalled.map((f) => f.id)));
+      }
+      const context = mem.assembleContext(recalled);
+      const withContext = (t: string) => (context ? context + t : t);
+
       const want = requestedTools(args);
-      const body: Parameters<typeof client.respond>[0] = { model: String(args.model), input };
+      const body: Parameters<typeof client.respond>[0] = {
+        model: String(args.model),
+        input:
+          typeof input === "string"
+            ? withContext(input)
+            : input.map((m, i) =>
+                // Only the first user turn carries the context, so a long
+                // conversation does not repeat it on every message.
+                i === 0 ? { ...m, content: [{ type: "text" as const, text: withContext(m.content[0].text) }] } : m,
+              ),
+      };
       if (typeof args.temperature === "number") body.temperature = args.temperature;
       if (typeof args.max_output_tokens === "number") body.max_output_tokens = args.max_output_tokens;
       if (typeof args.conversation_id === "string") body.conversation_id = args.conversation_id;
@@ -438,6 +512,7 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
       const empty = !text;
       return {
         text,
+        ...(recalled.length ? { memoryUsed: recalled.map((f) => ({ id: f.id, text: f.text })) } : {}),
         ...(empty
           ? {
               note:
@@ -504,6 +579,44 @@ async function run(tool: string, args: Record<string, unknown>): Promise<unknown
         input: Array.isArray(args.input) ? (args.input as string[]).map(String) : String(args.input),
         ...(typeof args.dimensions === "number" ? { dimensions: args.dimensions } : {}),
       });
+    case "anuma_remember": {
+      const v = mem.load();
+      const { vault, fact, created } = mem.remember(v, String(args.text), args.type as mem.FactType);
+      mem.save(vault);
+      return {
+        stored: fact,
+        created,
+        note: created ? "New fact stored." : "Fact already known; refreshed rather than duplicated.",
+        vaultPath: mem.vaultPath(),
+        total: vault.facts.length,
+      };
+    }
+    case "anuma_recall": {
+      const v = mem.load();
+      const limit = typeof args.limit === "number" ? args.limit : 5;
+      const hits = mem.recall(v, String(args.query), limit);
+      // Recall is a use. Surfacing a fact is evidence it still matters.
+      if (hits.length) mem.save(mem.touch(v, hits.map((f) => f.id)));
+      return {
+        count: hits.length,
+        facts: hits,
+        ...(hits.length === 0 ? { note: "Nothing relevant. Facts are matched on shared terms, so try the words you would actually use." } : {}),
+      };
+    }
+    case "anuma_forget": {
+      const v = mem.load();
+      if (args.prune) {
+        const { vault, dropped } = mem.prune(v);
+        mem.save(vault);
+        return { pruned: dropped, remaining: vault.facts.length };
+      }
+      if (typeof args.id !== "string") {
+        throw new ValidationError("anuma_forget needs either `id` or `prune: true`.");
+      }
+      const { vault, removed } = mem.forget(v, args.id);
+      mem.save(vault);
+      return { removed, id: args.id, remaining: vault.facts.length };
+    }
     case "anuma_apps": {
       const { apps } = await client.listApps();
       const wanted = typeof args.app_uuid === "string" ? apps.filter((a) => a.app_uuid === args.app_uuid) : apps;
